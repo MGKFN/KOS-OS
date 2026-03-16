@@ -1,0 +1,21 @@
+Find in shell.cpp the cmd_ver function and replace with:
+
+static void cmd_ver() {
+    unsigned char col = (current_bg_color << 4) | current_text_color;
+    vga_print("\n", col);
+    vga_print("  ========================================\n", 0x0B);
+    vga_print("   KOS - Kyan Operating System\n", 0x0B);
+    vga_print("  ========================================\n", 0x0B);
+    vga_print("\n", col);
+    vga_print("  Version:        1.0 Beta (Build 14)\n", col);
+    vga_print("  Architecture:   x86_64 (64-bit)\n", col);
+    vga_print("  Toolchain:      GCC 13.2.0 + NASM 2.16\n", col);
+    vga_print("  Boot Protocol:  Multiboot2\n", col);
+    vga_print("\n", col);
+    vga_print("  Copyright (c) 2026 Kyan. All rights reserved.\n", 0x08);
+    vga_print("  KOS and the KOS logo are trademarks of Kyan.\n", 0x08);
+    vga_print("\n", col);
+    vga_print("  Licensed under proprietary license.\n", 0x08);
+    vga_print("  Unauthorized copying or distribution prohibited.\n", 0x08);
+    vga_print("\n", col);
+}

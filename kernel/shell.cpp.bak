@@ -1,0 +1,256 @@
+// ============================================================
+//  KOS Shell Implementation
+// ============================================================
+#include "shell.h"
+#include "keyboard.h"
+#include "pmm.h"
+#include "heap.h"
+#include <stdint.h>
+
+extern void vga_print(const char* str, unsigned char color);
+extern void vga_print_hex(uint64_t val, unsigned char color);
+
+static const unsigned char CLR_DEFAULT = 0x0F;
+static const unsigned char CLR_PROMPT  = 0x0B;
+static const unsigned char CLR_SUCCESS = 0x0A;
+static const unsigned char CLR_ERROR   = 0x0C;
+static const unsigned char CLR_WARNING = 0x0E;
+static const unsigned char CLR_INFO    = 0x09;
+
+static char cmd_buffer[256];
+static int cmd_len = 0;
+
+// String helpers
+static int str_len(const char* s) {
+    int i = 0;
+    while (s[i]) i++;
+    return i;
+}
+
+static int str_cmp(const char* a, const char* b) {
+    int i = 0;
+    while (a[i] && b[i]) {
+        char ca = a[i], cb = b[i];
+        // Case insensitive
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return ca - cb;
+        i++;
+    }
+    return a[i] - b[i];
+}
+
+static bool str_starts_with(const char* str, const char* prefix) {
+    int i = 0;
+    while (prefix[i]) {
+        if (!str[i]) return false;
+        char c1 = str[i], c2 = prefix[i];
+        if (c1 >= 'a' && c1 <= 'z') c1 -= 32;
+        if (c2 >= 'a' && c2 <= 'z') c2 -= 32;
+        if (c1 != c2) return false;
+        i++;
+    }
+    return true;
+}
+
+// CPUID helper
+struct CPUInfo {
+    char vendor[13];
+    uint32_t max_function;
+    uint32_t features_ecx;
+    uint32_t features_edx;
+};
+
+static void get_cpu_info(CPUInfo* info) {
+    uint32_t eax, ebx, ecx, edx;
+    
+    // CPUID 0: Vendor string
+    asm volatile("cpuid"
+        : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+        : "a"(0));
+    
+    info->max_function = eax;
+    *(uint32_t*)(info->vendor + 0) = ebx;
+    *(uint32_t*)(info->vendor + 4) = edx;
+    *(uint32_t*)(info->vendor + 8) = ecx;
+    info->vendor[12] = '\0';
+    
+    // CPUID 1: Features
+    if (info->max_function >= 1) {
+        asm volatile("cpuid"
+            : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+            : "a"(1));
+        info->features_ecx = ecx;
+        info->features_edx = edx;
+    }
+}
+
+// Command implementations
+static void cmd_help() {
+    vga_print("\n  KOS Commands:\n", CLR_INFO);
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+    vga_print("  HELP      - Show this help\n", CLR_DEFAULT);
+    vga_print("  CLS       - Clear screen\n", CLR_DEFAULT);
+    vga_print("  VER       - Show KOS version\n", CLR_DEFAULT);
+    vga_print("  ECHO text - Print text\n", CLR_DEFAULT);
+    vga_print("  MEM       - Memory statistics\n", CLR_DEFAULT);
+    vga_print("  CPU       - CPU information\n", CLR_DEFAULT);
+    vga_print("  DISK      - Disk information (not yet implemented)\n", CLR_DEFAULT);
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+}
+
+extern void vga_clear();
+extern void draw_title_bar();
+
+static void cmd_cls() {
+    vga_clear();
+    draw_title_bar();
+    vga_print("\n", CLR_DEFAULT);
+}
+
+static void cmd_ver() {
+    vga_print("\n", CLR_DEFAULT);
+    vga_print("  KOS - Kyan Operating System\n", CLR_INFO);
+    vga_print("  Version 1.0 Beta (Checkpoint 11)\n", CLR_DEFAULT);
+    vga_print("  64-bit x86_64 | Built with GCC + NASM\n", CLR_DEFAULT);
+    vga_print("  (C) 2026 Kyan - All rights reserved\n", CLR_DEFAULT);
+}
+
+static void cmd_echo(const char* args) {
+    vga_print("\n  ", CLR_DEFAULT);
+    if (*args == '\0') {
+        vga_print("ECHO is on.\n", CLR_DEFAULT);
+    } else {
+        vga_print(args, CLR_DEFAULT);
+        vga_print("\n", CLR_DEFAULT);
+    }
+}
+
+static void cmd_mem() {
+    vga_print("\n  Memory Statistics:\n", CLR_INFO);
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+    
+    vga_print("  Total RAM:  ", CLR_DEFAULT);
+    vga_print_hex(pmm_get_total_memory() / 1024, CLR_SUCCESS);
+    vga_print(" KB\n", CLR_DEFAULT);
+    
+    vga_print("  Free RAM:   ", CLR_DEFAULT);
+    vga_print_hex(pmm_get_free_memory() / 1024, CLR_SUCCESS);
+    vga_print(" KB\n", CLR_DEFAULT);
+    
+    uint64_t used = pmm_get_total_memory() - pmm_get_free_memory();
+    vga_print("  Used RAM:   ", CLR_DEFAULT);
+    vga_print_hex(used / 1024, CLR_WARNING);
+    vga_print(" KB\n", CLR_DEFAULT);
+    
+    vga_print("\n  Heap Used:  ", CLR_DEFAULT);
+    vga_print_hex(heap_get_used(), CLR_WARNING);
+    vga_print(" bytes\n", CLR_DEFAULT);
+    
+    vga_print("  Heap Free:  ", CLR_DEFAULT);
+    vga_print_hex(heap_get_free(), CLR_SUCCESS);
+    vga_print(" bytes\n", CLR_DEFAULT);
+    
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+}
+
+static void cmd_cpu() {
+    CPUInfo cpu;
+    get_cpu_info(&cpu);
+    
+    vga_print("\n  CPU Information:\n", CLR_INFO);
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+    
+    vga_print("  Vendor:     ", CLR_DEFAULT);
+    vga_print(cpu.vendor, CLR_SUCCESS);
+    vga_print("\n", CLR_DEFAULT);
+    
+    vga_print("  Mode:       64-bit Long Mode\n", CLR_DEFAULT);
+    
+    vga_print("  Features:   ", CLR_DEFAULT);
+    if (cpu.features_edx & (1 << 0))  vga_print("FPU ", CLR_SUCCESS);
+    if (cpu.features_edx & (1 << 23)) vga_print("MMX ", CLR_SUCCESS);
+    if (cpu.features_edx & (1 << 25)) vga_print("SSE ", CLR_SUCCESS);
+    if (cpu.features_edx & (1 << 26)) vga_print("SSE2 ", CLR_SUCCESS);
+    if (cpu.features_ecx & (1 << 0))  vga_print("SSE3 ", CLR_SUCCESS);
+    if (cpu.features_ecx & (1 << 9))  vga_print("SSSE3 ", CLR_SUCCESS);
+    if (cpu.features_ecx & (1 << 19)) vga_print("SSE4.1 ", CLR_SUCCESS);
+    if (cpu.features_ecx & (1 << 20)) vga_print("SSE4.2 ", CLR_SUCCESS);
+    vga_print("\n", CLR_DEFAULT);
+    
+    vga_print("  --------------------------------------------\n", CLR_DEFAULT);
+}
+
+static void cmd_disk() {
+    vga_print("\n  Disk information not yet implemented.\n", CLR_WARNING);
+    vga_print("  Coming in Checkpoint 21-30 (Storage drivers)\n", CLR_DEFAULT);
+}
+
+// Command parser
+static void execute_command() {
+    // Skip leading spaces
+    int i = 0;
+    while (cmd_buffer[i] == ' ') i++;
+    
+    if (cmd_buffer[i] == '\0') return; // Empty command
+    
+    // Extract command word
+    char cmd[64];
+    int ci = 0;
+    while (cmd_buffer[i] && cmd_buffer[i] != ' ' && ci < 63) {
+        cmd[ci++] = cmd_buffer[i++];
+    }
+    cmd[ci] = '\0';
+    
+    // Skip spaces before args
+    while (cmd_buffer[i] == ' ') i++;
+    const char* args = &cmd_buffer[i];
+    
+    // Execute command
+    if (str_cmp(cmd, "HELP") == 0)      cmd_help();
+    else if (str_cmp(cmd, "CLS") == 0)  cmd_cls();
+    else if (str_cmp(cmd, "VER") == 0)  cmd_ver();
+    else if (str_cmp(cmd, "ECHO") == 0) cmd_echo(args);
+    else if (str_cmp(cmd, "MEM") == 0)  cmd_mem();
+    else if (str_cmp(cmd, "CPU") == 0)  cmd_cpu();
+    else if (str_cmp(cmd, "DISK") == 0) cmd_disk();
+    else {
+        vga_print("\n  Bad command or file name: ", CLR_ERROR);
+        vga_print(cmd, CLR_ERROR);
+        vga_print("\n  Type HELP for available commands.\n", CLR_DEFAULT);
+    }
+}
+
+void shell_init() {
+    cmd_len = 0;
+}
+
+void shell_run() {
+    vga_print("\n  Type HELP for available commands.\n", CLR_INFO);
+    vga_print("\n  KOS> ", CLR_PROMPT);
+    
+    while (true) {
+        char c = keyboard_getchar();
+        if (c) {
+            if (c == '\n') {
+                cmd_buffer[cmd_len] = '\0';
+                execute_command();
+                cmd_len = 0;
+                vga_print("\n  KOS> ", CLR_PROMPT);
+            } else if (c == '\b') {
+                if (cmd_len > 0) {
+                    cmd_len--;
+                    extern void vga_putchar(char ch, unsigned char color);
+                    vga_putchar('\b', CLR_DEFAULT);
+                }
+            } else {
+                if (cmd_len < 255) {
+                    cmd_buffer[cmd_len++] = c;
+                    extern void vga_putchar(char ch, unsigned char color);
+                    vga_putchar(c, CLR_DEFAULT);
+                }
+            }
+        }
+        asm volatile("hlt");
+    }
+}

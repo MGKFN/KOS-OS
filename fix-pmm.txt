@@ -1,0 +1,7 @@
+Line to find:
+    // Reserve first 1MB (BIOS, kernel code, VGA buffer)
+    for (uint64_t p = 0; p < 256; p++) { // 256 pages = 1MB
+
+Change to:
+    // Reserve first 2MB (BIOS, kernel code, VGA buffer)
+    for (uint64_t p = 0; p < 512; p++) { // 512 pages = 2MB
